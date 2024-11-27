@@ -327,6 +327,11 @@ local cfg_template = {
         name = 'Scheduler bucket move quota', type = 'non-negative number',
         is_optional = true, default = consts.DEFAULT_SCHED_MOVE_QUOTA
     },
+    space_bucket_id = {
+        type = 'positive integer',
+        name = 'Id of space _bucket',
+        is_optional = true,
+    },
 }
 
 --
