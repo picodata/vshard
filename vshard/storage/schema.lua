@@ -79,10 +79,10 @@ end
 -- The schema first time appeared with 0.1.16. So this function describes schema
 -- before that - 0.1.15.
 --
-local function schema_init_0_1_15_0(username, password)
+local function schema_init_0_1_15_0(username, password, space_bucket_id)
     llog.info("Initializing schema %s", schema_version_make({0, 1, 15, 0}))
 
-    local bucket = box.schema.space.create('_bucket')
+    local bucket = box.schema.space.create('_bucket', { id = space_bucket_id })
     bucket:format({
         {'id', 'unsigned'},
         {'status', 'string'},
@@ -159,14 +159,14 @@ local schema_upgrade_handlers = {
     },
 }
 
-local function schema_upgrade(target_version, username, password)
+local function schema_upgrade(target_version, username, password, space_bucket_id)
     local _schema = box.space._schema
     local is_old_versioning = _schema:get({'oncevshard:storage:1'}) ~= nil
     local version = schema_current_version()
     local is_bootstrap = not box.space._bucket
 
     if is_bootstrap then
-        schema_init_0_1_15_0(username, password)
+        schema_init_0_1_15_0(username, password, space_bucket_id)
     elseif is_old_versioning then
         llog.info("The instance does not have 'vshard_version' record. "..
                   "It is 0.1.15.0.")

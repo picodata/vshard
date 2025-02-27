@@ -469,6 +469,11 @@ local cfg_template = {
         enum = {'uuid_as_key', 'name_as_key'},
         check = check_identification_mode,
     },
+    space_bucket_id = {
+        type = 'positive integer',
+        name = 'Id of space _bucket',
+        is_optional = true,
+    },
 }
 
 --
