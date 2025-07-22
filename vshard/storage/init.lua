@@ -3759,7 +3759,7 @@ local function storage_cfg_xc(cfgctx)
 
     if this_is_master() then
         local uri = luri.parse(M.this_replica.uri)
-        lschema.upgrade(lschema.latest_version, uri.login, uri.password)
+        lschema.upgrade(lschema.latest_version, uri.login, uri.password, new_cfg.space_bucket_id)
     else
         schema_upgrade_replica()
     end

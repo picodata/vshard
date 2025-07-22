@@ -486,6 +486,11 @@ local cfg_template = {
         name = 'Fetch schema', type = 'boolean',
         is_optional = true, default = true,
     },
+    space_bucket_id = {
+        type = 'positive integer',
+        name = 'Id of space _bucket',
+        is_optional = true,
+    },
 }
 
 --
