@@ -25,6 +25,9 @@ if not M then
         errinj = {
             ERRINJ_UPGRADE = false,
         },
+        -- Upper limit for internal space IDs - prevents internal spaces
+        -- from being sharded when numeric shard_index used.
+        max_internal_space_id = nil,
     }
 else
     return M
@@ -252,12 +255,15 @@ local function find_sharded_spaces()
     end
     local spaces = {}
     local idx = M.shard_index
+    local max_internal_space_id = M.max_internal_space_id
     for k, space in pairs(box.space) do
-        if type(k) == 'number' and space.index[idx] ~= nil then
-            local parts = space.index[idx].parts
-            local p = parts[1].type
-            if p == 'unsigned' or p == 'integer' or p == 'number' then
-                spaces[k] = space
+        if type(k) == 'number' and (max_internal_space_id == nil or k > max_internal_space_id) then
+            if space.index[idx] ~= nil then
+                local parts = space.index[idx].parts
+                local p = parts[1].type
+                if p == 'unsigned' or p == 'integer' or p == 'number' then
+                    spaces[k] = space
+                end
             end
         end
     end
@@ -269,6 +275,7 @@ end
 local function schema_cfg(cfg)
     M.shard_index = cfg.shard_index
     M.management_mode = cfg.schema_management_mode
+    M.max_internal_space_id = cfg.max_internal_space_id
 end
 
 M.current_version = schema_current_version

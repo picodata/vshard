@@ -491,6 +491,11 @@ local cfg_template = {
         name = 'Id of space _bucket',
         is_optional = true,
     },
+    max_internal_space_id = {
+        type = 'positive integer',
+        name = 'Upper limit for internal space IDs. Internal spaces are ignored by vshard',
+        is_optional = true,
+    },
 }
 
 --
@@ -530,7 +535,7 @@ end
 -- Names of options which cannot be changed during reconfigure.
 --
 local non_dynamic_options = {
-    'bucket_count', 'shard_index'
+    'bucket_count', 'shard_index', 'max_internal_space_id'
 }
 
 --
