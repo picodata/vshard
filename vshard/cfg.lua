@@ -496,6 +496,12 @@ local cfg_template = {
         name = 'Upper limit for internal space IDs. Internal spaces are ignored by vshard',
         is_optional = true,
     },
+    use_pk_as_shard_index = {
+        name = 'Use first part from primary key as shard index. This option and the separate "shard_index" option are independent and can function simultaneously',
+        type = 'boolean',
+        is_optional = true,
+        default = false,
+    },
 }
 
 --
@@ -535,7 +541,7 @@ end
 -- Names of options which cannot be changed during reconfigure.
 --
 local non_dynamic_options = {
-    'bucket_count', 'shard_index', 'max_internal_space_id'
+    'bucket_count', 'shard_index', 'max_internal_space_id', 'use_pk_as_shard_index'
 }
 
 --

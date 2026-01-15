@@ -1700,8 +1700,9 @@ local function bucket_collect(bucket_id)
     end
     local data = {}
     local spaces = lschema.find_sharded_spaces()
-    local idx = lschema.shard_index
-    for _, space in pairs(spaces) do
+    for _, space_and_index in pairs(spaces) do
+        local space = space_and_index.space
+        local idx = space_and_index.shard_index
         assert(space.index[idx] ~= nil)
         local space_data = space.index[idx]:select({bucket_id})
         table.insert(data, {space.name, space_data})
@@ -1818,7 +1819,6 @@ local function bucket_send_xc(bucket_id, destination, opts, exception_guard)
     local data = {}
     local spaces = lschema.find_sharded_spaces()
     local limit = consts.BUCKET_CHUNK_SIZE
-    local idx = lschema.shard_index
     local bucket_generation = M.bucket_generation
     local sendg = BSENDING
 
@@ -1841,7 +1841,9 @@ local function bucket_send_xc(bucket_id, destination, opts, exception_guard)
     end
 
     exception_guard.drop_rw_lock = false
-    for _, space in pairs(spaces) do
+    for _, space_and_index in pairs(spaces) do
+        local space = space_and_index.space
+        local idx = space_and_index.shard_index
         local index = space.index[idx]
         local space_data = {}
         for _, t in index:pairs({bucket_id}) do
@@ -1993,8 +1995,10 @@ end
 -- @param bucket_id Id of the bucket to cleanup.
 -- @param status Bucket status for guard checks.
 --
-local function gc_bucket_in_space_xc(space, bucket_id, status)
-    local bucket_index = space.index[lschema.shard_index]
+local function gc_bucket_in_space_xc(space_and_index, bucket_id, status)
+    local space = space_and_index.space
+    local shard_index = space_and_index.shard_index
+    local bucket_index = space.index[shard_index]
     if #bucket_index:select({bucket_id}, {limit = 1}) == 0 then
         return
     end
@@ -2021,8 +2025,8 @@ end
 --
 -- Exception safe version of gc_bucket_in_space_xc.
 --
-local function gc_bucket_in_space(space, bucket_id, status)
-    local ok, err = pcall(gc_bucket_in_space_xc, space, bucket_id, status)
+local function gc_bucket_in_space(space_and_index, bucket_id, status)
+    local ok, err = pcall(gc_bucket_in_space_xc, space_and_index, bucket_id, status)
     if not ok then
         box.rollback()
     end
@@ -2048,8 +2052,8 @@ local function gc_bucket_drop_xc(status, route_map)
                 goto continue
             end
         end
-        for _, space in pairs(sharded_spaces) do
-            gc_bucket_in_space_xc(space, id, status)
+        for _, space_and_index in pairs(sharded_spaces) do
+            gc_bucket_in_space_xc(space_and_index, id, status)
             limit = limit - 1
             if limit == 0 then
                 lfiber.sleep(0)
@@ -2361,8 +2365,8 @@ local function bucket_delete_garbage(bucket_id, opts)
               'ignore this attention')
     end
     local sharded_spaces = lschema.find_sharded_spaces()
-    for _, space in pairs(sharded_spaces) do
-        local status, err = gc_bucket_in_space(space, bucket_id, bucket_status)
+    for _, space_and_index in pairs(sharded_spaces) do
+        local status, err = gc_bucket_in_space(space_and_index, bucket_id, bucket_status)
         if not status then
             error(err)
         end

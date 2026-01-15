@@ -28,6 +28,8 @@ if not M then
         -- Upper limit for internal space IDs - prevents internal spaces
         -- from being sharded when numeric shard_index used.
         max_internal_space_id = nil,
+        -- Use first part from primary key as shard index.
+        use_pk_as_shard_index = false,
     }
 else
     return M
@@ -255,17 +257,37 @@ local function find_sharded_spaces()
     end
     local spaces = {}
     local idx = M.shard_index
+    local pk_idx = 0
     local max_internal_space_id = M.max_internal_space_id
+    local use_pk_as_shard_index = M.use_pk_as_shard_index
     for k, space in pairs(box.space) do
-        if type(k) == 'number' and (max_internal_space_id == nil or k > max_internal_space_id) then
-            if space.index[idx] ~= nil then
-                local parts = space.index[idx].parts
+        if type(k) ~= 'number' then
+            goto continue
+        end
+        if max_internal_space_id ~= nil and k <= max_internal_space_id then
+            goto continue
+        end
+        if space.index[idx] ~= nil then
+            local parts = space.index[idx].parts
+            local p = parts[1].type
+            if p == 'unsigned' or p == 'integer' or p == 'number' then
+                spaces[k] = {space = space, shard_index = idx}
+            end
+        end
+        if use_pk_as_shard_index and pk_idx ~= idx then
+            if space.index[pk_idx] ~= nil then
+                local parts = space.index[pk_idx].parts
+                local fieldno = parts[1].fieldno
                 local p = parts[1].type
-                if p == 'unsigned' or p == 'integer' or p == 'number' then
-                    spaces[k] = space
+                if fieldno == 1 and (p == 'unsigned' or p == 'integer' or p == 'number') then
+                    local has_shard_index_as_first_col = box.space._space:get(k).format[fieldno].name == idx
+                    if has_shard_index_as_first_col then
+                        spaces[k] = {space = space, shard_index = pk_idx}
+                    end
                 end
             end
         end
+    ::continue::
     end
     sharded_spaces_cache_schema_version = schema_version
     sharded_spaces_cache = spaces
@@ -276,6 +298,7 @@ local function schema_cfg(cfg)
     M.shard_index = cfg.shard_index
     M.management_mode = cfg.schema_management_mode
     M.max_internal_space_id = cfg.max_internal_space_id
+    M.use_pk_as_shard_index = cfg.use_pk_as_shard_index
 end
 
 M.current_version = schema_current_version
