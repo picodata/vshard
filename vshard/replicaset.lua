@@ -889,6 +889,8 @@ local function replicaset_template_multicallro(prefer_replica, balance)
     return function(replicaset, func, args, opts)
         assert(opts == nil or type(opts) == 'table')
         opts = opts and table.copy(opts) or {}
+        local force_replica = opts.force_replica or false
+        opts.force_replica = nil
         local timeout = opts.timeout or consts.CALL_TIMEOUT_MAX
         local request_timeout = opts.request_timeout or timeout
         assert(request_timeout <= timeout)
@@ -918,6 +920,17 @@ local function replicaset_template_multicallro(prefer_replica, balance)
         while not net_status and timeout > 0 do
             replica = pick_next_replica(replicaset, now, state)
             if not replica then
+                --- If `force_replica` is set then implicit fallback to master
+                --- is not acceptable. Let's retry until timeout.
+                if force_replica then
+                    fiber_yield()
+                    now = fiber_clock()
+                    timeout = end_time - now
+                    if timeout < 0 then
+                        return nil, lerror.timeout()
+                    end
+                    goto continue
+                end
                 replica, timeout = replicaset_wait_master(replicaset, timeout)
                 if not replica then
                     return nil, timeout
@@ -965,6 +978,7 @@ local function replicaset_template_multicallro(prefer_replica, balance)
                     break
                 end
             end
+        ::continue::
         end
         if not net_status then
             return nil, lerror.make(retval)
