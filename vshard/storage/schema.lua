@@ -261,6 +261,9 @@ local function find_sharded_spaces()
     local max_internal_space_id = M.max_internal_space_id
     local use_pk_as_shard_index = M.use_pk_as_shard_index
     for k, space in pairs(box.space) do
+        if space.is_local or space.temporary then
+            goto continue
+        end
         if type(k) ~= 'number' then
             goto continue
         end
