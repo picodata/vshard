@@ -1725,6 +1725,7 @@ local router_mt = {
         master_search_wakeup = router_make_api(master_search_wakeup),
         discovery_set = router_make_api(discovery_set),
         _route_map_clear = router_make_api(route_map_clear),
+        _bucket_set = router_make_api(bucket_set),
         _bucket_reset = router_make_api(bucket_reset),
         _buckets_group = router_make_api(buckets_group),
         disable = router_disable,
