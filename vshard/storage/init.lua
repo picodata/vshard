@@ -3374,7 +3374,7 @@ end
 --------------------------------------------------------------------------------
 
 local function master_role_update()
-    if this_is_master() and M.is_configured then
+    if this_is_master() and M.is_configured and M.current_cfg.rebalancer_mode ~= 'off' then
         if not M.collect_bucket_garbage_fiber then
             M.collect_bucket_garbage_fiber =
                 util.reloadable_fiber_create('vshard.gc', M, 'gc_bucket_f')
