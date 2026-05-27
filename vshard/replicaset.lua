@@ -248,7 +248,7 @@ end
 -- on_connect() trigger for net.box
 --
 local function netbox_on_connect(conn)
-    log.info("connected to %s:%s", conn.host, conn.port)
+    log.verbose("connected to %s:%s", conn.host, conn.port)
     local replica = conn.replica
     assert(replica ~= nil)
     -- If a replica's connection has revived, then unset
@@ -281,7 +281,7 @@ end
 -- on_disconnect() trigger for net.box
 --
 local function netbox_on_disconnect(conn)
-    log.info("disconnected from %s:%s", conn.host, conn.port)
+    log.verbose("disconnected from %s:%s", conn.host, conn.port)
     assert(conn.replica)
     -- Replica is down - remember this time to decrease replica
     -- priority after FAILOVER_DOWN_TIMEOUT seconds.
@@ -1329,7 +1329,7 @@ local function replica_update_health_status(replica, status, reason)
 
     replica.health_status = status
     if status == consts.STATUS.GREEN then
-        log.info("Replica %s is healthy", replica.id)
+        log.verbose("Replica %s is healthy", replica.id)
     elseif status == consts.STATUS.RED then
         assert(reason ~= nil)
         log.warn("Replica %s is unhealthy: %s", replica.id, reason)
@@ -1851,7 +1851,7 @@ local function replicaset_failover_step(replicaset)
         replicaset:down_replica_priority()
     end
     if old_replica ~= replicaset.replica then
-        log.info('New replica %s for %s', replicaset.replica, replicaset)
+        log.verbose('New replica %s for %s', replicaset.replica, replicaset)
         return true
     end
     return false
@@ -1899,20 +1899,12 @@ local function replicaset_failover_service_step(replicaset, data)
             lerror.make(replica_is_changed)))
         replica_is_changed = true
     elseif not data.prev_was_ok then
-        log.info('All replicas are ok')
+        log.verbose('All replicas are ok')
         data.info:set_status_ok()
     end
     data.prev_was_ok = not replica_is_changed
-    local logf
-    if replica_is_changed then
-        logf = log.info
-    else
-        -- In any case it is necessary to periodically log
-        -- failover heartbeat.
-        logf = log.verbose
-    end
-    logf('Failovering step is finished. Schedule next after %f seconds',
-         replicaset.failover_interval)
+    log.verbose('Failovering step is finished. Schedule next after %f seconds',
+                replicaset.failover_interval)
     data.info:set_activity('idling')
     return replicaset.failover_interval
 end
@@ -1933,7 +1925,7 @@ local function replica_collect_idle_conns_service_step(replica, data)
        replica.activity_ts + timeout < fiber_clock() then
         replica.conn = nil
         c:close()
-        log.info('Closed unused connection to %s', replica)
+        log.verbose('Closed unused connection to %s', replica)
     end
     data.info:set_status_ok()
     return consts.MASTER_SEARCH_IDLE_INTERVAL
