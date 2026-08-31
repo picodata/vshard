@@ -23,7 +23,7 @@
 
 local MODULE_INTERNALS = '__module_vshard_storage_sched'
 -- Update when change behaviour of anything in the file, to be able to reload.
-local MODULE_VERSION = 1
+local MODULE_VERSION = 2
 
 local lfiber = require('fiber')
 local lconsts = require('vshard.consts')
@@ -127,21 +127,43 @@ local function sched_ref_end(count)
 end
 
 --
--- Return the remaining timeout in case there was a yield. This helps to save
--- current clock get in the caller code if there were no yields.
+-- Take a place in the move queue. Idempotency is the caller's business -- see
+-- `pico._sched_move_enqueue` -- as is leaving it again (`sched_move_dequeue`)
+-- if the move is no longer wanted.
 --
-local function sched_move_start(timeout)
+local function sched_move_enqueue()
+    M.move_queue = M.move_queue + 1
+end
+
+--
+-- Give up a place in the move queue without having started a move.
+--
+local function sched_move_dequeue()
+    assert(M.move_queue > 0)
+    M.move_queue = M.move_queue - 1
+    if M.move_queue == 0 then
+        -- Refs held off by `M.move_queue > 0` in sched_ref_start have nothing
+        -- to wait for any more.
+        M.cond:broadcast()
+    end
+end
+
+--
+-- Wait for an already enqueued move's turn, for at most `timeout` seconds.
+-- Returns the remaining timeout, or nil and an error if the turn didn't come.
+--
+-- Unlike `sched_move_start` a timeout here **keeps the caller's place in the
+-- queue**. That is what it exists for: picodata's resharding_loop decides what
+-- to do from the current state on every iteration, so it cannot sit inside one
+-- long blocking call, and if it dropped out of the queue between iterations
+-- then sched_ref_start's anti starvation rule -- `M.move_queue > 0 and
+-- M.ref_strike >= M.ref_quota` -- would never see a move pending, and refs
+-- would keep arriving on the fast path for as long as the loop kept retrying.
+--
+local function sched_move_wait(timeout)
     local ok, err, deadline, ref_deadline
     local lref = lregistry.storage_ref
-    -- Fast-path. Refs are not extremely rare *when used*. But they are not
-    -- expected to be used in a lot of installations. So most of the times the
-    -- moves should work right away.
-    if M.ref_count == 0 and M.ref_queue == 0 then
-        goto success
-    end
     deadline = fiber_clock() + timeout
-
-    M.move_queue = M.move_queue + 1
 
 ::retry::
     if M.ref_count > 0 then
@@ -181,17 +203,40 @@ local function sched_move_start(timeout)
         goto retry
     end
 
+    assert(M.move_queue > 0)
     M.move_queue = M.move_queue - 1
-
-::success::
     M.move_count = M.move_count + 1
     M.move_strike = M.move_strike + 1
     M.ref_strike = 0
     do return timeout end
 
 ::fail::
-    M.move_queue = M.move_queue - 1
+    -- Note we stay in the queue, see the comment above.
     return nil, err
+end
+
+--
+-- Return the remaining timeout in case there was a yield. This helps to save
+-- current clock get in the caller code if there were no yields.
+--
+local function sched_move_start(timeout)
+    -- Fast-path. Refs are not extremely rare *when used*. But they are not
+    -- expected to be used in a lot of installations. So most of the times the
+    -- moves should work right away.
+    if M.ref_count == 0 and M.ref_queue == 0 then
+        M.move_count = M.move_count + 1
+        M.move_strike = M.move_strike + 1
+        M.ref_strike = 0
+        return timeout
+    end
+
+    sched_move_enqueue()
+    local res, err = sched_move_wait(timeout)
+    if res == nil then
+        sched_move_dequeue()
+        return nil, err
+    end
+    return res
 end
 
 local function sched_move_end(count)
@@ -223,6 +268,9 @@ end
 M.ref_start = sched_ref_start
 M.ref_end = sched_ref_end
 M.move_start = sched_move_start
+M.move_enqueue = sched_move_enqueue
+M.move_dequeue = sched_move_dequeue
+M.move_wait = sched_move_wait
 M.move_end = sched_move_end
 M.cfg = sched_cfg
 lregistry.storage_sched = M
