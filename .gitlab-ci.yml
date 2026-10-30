@@ -1,0 +1,45 @@
+# CI of the Picodata fork of vshard. The upstream CI in .github/workflows
+# runs on GitHub only.
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # A push to a branch with an open MR is tested by the MR pipeline.
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH =~ /^picodata-/
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+variables:
+  # The upgrade and reload tests check out old vshard commits.
+  GIT_DEPTH: 0
+  # test-run and its own submodules, luatest among them.
+  GIT_SUBMODULE_STRATEGY: recursive
+  # Some tests wait for log messages that the fork logs at the verbose level.
+  TT_LOG_LEVEL: "6"
+
+test:
+  tags:
+    - docker-k8s
+  # Tarantool of Picodata, built from tarantool-sys by the tarantool module CI.
+  image: $CI_REGISTRY/core/picodata/tarantool-module-build-base-fork:latest
+  timeout: 30m
+  interruptible: true
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+      - scheduler_failure
+      - api_failure
+  before_script:
+    - dnf install -y python3-pyyaml python3-gevent
+  script:
+    - cd test
+    - ./test-run.py --force -j 4 --vardir var
+  artifacts:
+    when: on_failure
+    expire_in: 1 week
+    paths:
+      - test/var/**/*.log
+      - test/var/rejects/
+      - test/var/reproduce/
