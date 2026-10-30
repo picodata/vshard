@@ -369,6 +369,8 @@ local function bucket_are_all_rw_not_cache()
        not index_has(status_index, status.GARBAGE)
 
     M.bucket_are_all_rw_cache = res
+    -- A copy for the hosts which take refs without Lua, see sched.lua.
+    lsched.state.all_rw = res and 1 or 0
     bucket_are_all_rw = bucket_are_all_rw_cache
     return res
 end
@@ -387,6 +389,7 @@ local function bucket_generation_increment()
     bucket_are_all_rw = bucket_are_all_rw_not_cache
     M.bucket_count_cache = nil
     M.bucket_are_all_rw_cache = nil
+    lsched.state.all_rw = -1
     M.bucket_generation = M.bucket_generation + 1
     M.bucket_generation_cond:broadcast()
 end

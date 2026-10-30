@@ -25,6 +25,7 @@ local MODULE_INTERNALS = '__module_vshard_storage_sched'
 -- Update when change behaviour of anything in the file, to be able to reload.
 local MODULE_VERSION = 1
 
+local ffi = require('ffi')
 local lfiber = require('fiber')
 local lconsts = require('vshard.consts')
 local lregistry = require('vshard.registry')
@@ -32,6 +33,78 @@ local lutil = require('vshard.util')
 local fiber_clock = lfiber.clock
 local fiber_cond_wait = lutil.fiber_cond_wait
 local fiber_is_self_canceled = lutil.fiber_is_self_canceled
+
+--
+-- The scheduler numbers live in a C struct instead of a Lua table. A host
+-- process can then take and release a ref without calling Lua: Picodata does
+-- it when no move is running or queued. The host owns the struct and exports
+-- two functions to get it, see vshard_sched_state in Picodata. Keep the layout
+-- in sync with the host: the size is checked here, the field offsets by the
+-- host's tests.
+--
+-- Doubles, because LuaJIT reads them as plain Lua numbers, while int64_t would
+-- be boxed into a cdata on every read. The quotas are not always integers.
+--
+-- A second ffi.cdef of the same struct fails, and the module can be loaded
+-- again after its package.loaded entry is cleared.
+--
+if not pcall(ffi.typeof, 'struct vshard_sched_state') then
+    ffi.cdef([[
+        struct vshard_sched_state {
+            /* Refs. */
+            /* Number of ref requests being executed. */
+            double ref_count;
+            /* Number of ref requests waiting for start. */
+            double ref_queue;
+            /*
+             * Number of ref requests executed in a row. When becomes bigger
+             * than quota, any next queued move blocks new refs.
+             */
+            double ref_strike;
+            double ref_quota;
+            /* Moves. */
+            /* Number of move requests being executed. */
+            double move_count;
+            /* Number of move requests waiting for start. */
+            double move_queue;
+            /*
+             * Number of move requests executed in a row. When becomes bigger
+             * than quota, any next queued ref blocks new moves.
+             */
+            double move_strike;
+            double move_quota;
+            /*
+             * Whether all the buckets of the storage are writable: 1 yes,
+             * 0 no, -1 unknown. Written by the storage module, which caches
+             * the same value.
+             */
+            double all_rw;
+        };
+        struct vshard_sched_state *pico_vshard_sched_state(void);
+        size_t pico_vshard_sched_state_size(void);
+    ]])
+end
+
+local function sched_state_new()
+    local ok, state = pcall(function() return ffi.C.pico_vshard_sched_state() end)
+    if not ok then
+        -- No host to share the state with.
+        state = ffi.new('struct vshard_sched_state')
+        state.all_rw = -1
+        return state
+    end
+    local size = tonumber(ffi.C.pico_vshard_sched_state_size())
+    if size ~= ffi.sizeof('struct vshard_sched_state') then
+        error(string.format('struct vshard_sched_state is %d bytes in the '..
+                            'host and %d bytes in vshard', size,
+                            ffi.sizeof('struct vshard_sched_state')))
+    end
+    return state
+end
+
+local S = sched_state_new()
+S.ref_quota = lconsts.DEFAULT_SCHED_REF_QUOTA
+S.move_quota = lconsts.DEFAULT_SCHED_MOVE_QUOTA
 
 local M = rawget(_G, MODULE_INTERNALS)
 if not M then
@@ -42,28 +115,8 @@ if not M then
         -- happens - count of an operation type drops to 0, or quota increased,
         -- etc.
         cond = lfiber.cond(),
-
-        -------------------------- Refs --------------------------
-        -- Number of ref requests waiting for start.
-        ref_queue = 0,
-        -- Number of ref requests being executed. It is the same as ref's module
-        -- counter, but is duplicated here for the sake of isolation and
-        -- symmetry with moves.
-        ref_count = 0,
-        -- Number of ref requests executed in a row. When becomes bigger than
-        -- quota, any next queued move blocks new refs.
-        ref_strike = 0,
-        ref_quota = lconsts.DEFAULT_SCHED_REF_QUOTA,
-
-        ------------------------- Moves --------------------------
-        -- Number of move requests waiting for start.
-        move_queue = 0,
-        -- Number of move requests being executed.
-        move_count = 0,
-        -- Number of move requests executed in a row. When becomes bigger than
-        -- quota, any next queued ref blocks new moves.
-        move_strike = 0,
-        move_quota = lconsts.DEFAULT_SCHED_MOVE_QUOTA,
+        -- Refs and moves counters, see struct vshard_sched_state.
+        state = S,
     }
 else
     return M
@@ -81,37 +134,37 @@ local function sched_ref_start(timeout)
     local deadline, ok, err
     -- Fast-path. Moves are extremely rare. No need to inc-dec the ref queue
     -- then nor try to start some loops.
-    if M.move_count == 0 and M.move_queue == 0 then
+    if S.move_count == 0 and S.move_queue == 0 then
         goto success
     end
     deadline = fiber_clock() + timeout
 
-    M.ref_queue = M.ref_queue + 1
+    S.ref_queue = S.ref_queue + 1
 
 ::retry::
-    if M.move_count > 0 then
+    if S.move_count > 0 then
         goto wait_and_retry
     end
     -- Even if move count is zero, must ensure the time usage is fair. Does not
     -- matter in case the moves have no quota at all. That allows to ignore them
     -- infinitely until all refs end voluntarily.
-    if M.move_queue > 0 and M.ref_strike >= M.ref_quota and
-       M.move_quota > 0 then
+    if S.move_queue > 0 and S.ref_strike >= S.ref_quota and
+       S.move_quota > 0 then
         goto wait_and_retry
     end
 
-    M.ref_queue = M.ref_queue - 1
+    S.ref_queue = S.ref_queue - 1
 
 ::success::
-    M.ref_count = M.ref_count + 1
-    M.ref_strike = M.ref_strike + 1
-    M.move_strike = 0
+    S.ref_count = S.ref_count + 1
+    S.ref_strike = S.ref_strike + 1
+    S.move_strike = 0
     do return timeout end
 
 ::wait_and_retry::
     ok, err = sched_wait_anything(timeout)
     if not ok then
-        M.ref_queue = M.ref_queue - 1
+        S.ref_queue = S.ref_queue - 1
         return nil, err
     end
     timeout = deadline - fiber_clock()
@@ -119,9 +172,9 @@ local function sched_ref_start(timeout)
 end
 
 local function sched_ref_end(count)
-    count = M.ref_count - count
-    M.ref_count = count
-    if count == 0 and M.move_queue > 0 then
+    count = S.ref_count - count
+    S.ref_count = count
+    if count == 0 and S.move_queue > 0 then
         M.cond:broadcast()
     end
 end
@@ -136,15 +189,15 @@ local function sched_move_start(timeout)
     -- Fast-path. Refs are not extremely rare *when used*. But they are not
     -- expected to be used in a lot of installations. So most of the times the
     -- moves should work right away.
-    if M.ref_count == 0 and M.ref_queue == 0 then
+    if S.ref_count == 0 and S.ref_queue == 0 then
         goto success
     end
     deadline = fiber_clock() + timeout
 
-    M.move_queue = M.move_queue + 1
+    S.move_queue = S.move_queue + 1
 
 ::retry::
-    if M.ref_count > 0 then
+    if S.ref_count > 0 then
         ref_deadline = lref.next_deadline()
         if ref_deadline < deadline then
             timeout = ref_deadline - fiber_clock()
@@ -163,7 +216,7 @@ local function sched_move_start(timeout)
         lref.gc()
         -- GC could yield - need to refetch the clock again.
         timeout = deadline - fiber_clock()
-        if M.ref_count > 0 then
+        if S.ref_count > 0 then
             if timeout < 0 then
                 goto fail
             end
@@ -171,8 +224,8 @@ local function sched_move_start(timeout)
         end
     end
 
-    if M.ref_queue > 0 and M.move_strike >= M.move_quota and
-       M.ref_quota > 0 then
+    if S.ref_queue > 0 and S.move_strike >= S.move_quota and
+       S.ref_quota > 0 then
         ok, err = sched_wait_anything(timeout)
         if not ok then
             goto fail
@@ -181,23 +234,23 @@ local function sched_move_start(timeout)
         goto retry
     end
 
-    M.move_queue = M.move_queue - 1
+    S.move_queue = S.move_queue - 1
 
 ::success::
-    M.move_count = M.move_count + 1
-    M.move_strike = M.move_strike + 1
-    M.ref_strike = 0
+    S.move_count = S.move_count + 1
+    S.move_strike = S.move_strike + 1
+    S.ref_strike = 0
     do return timeout end
 
 ::fail::
-    M.move_queue = M.move_queue - 1
+    S.move_queue = S.move_queue - 1
     return nil, err
 end
 
 local function sched_move_end(count)
-    count = M.move_count - count
-    M.move_count = count
-    if count == 0 and M.ref_queue > 0 then
+    count = S.move_count - count
+    S.move_count = count
+    if count == 0 and S.ref_queue > 0 then
         M.cond:broadcast()
     end
 end
@@ -207,16 +260,16 @@ local function sched_cfg(cfg)
     local new_move_quota = cfg.sched_move_quota
 
     if new_ref_quota then
-        if new_ref_quota > M.ref_quota then
+        if new_ref_quota > S.ref_quota then
             M.cond:broadcast()
         end
-        M.ref_quota = new_ref_quota
+        S.ref_quota = new_ref_quota
     end
     if new_move_quota then
-        if new_move_quota > M.move_quota then
+        if new_move_quota > S.move_quota then
             M.cond:broadcast()
         end
-        M.move_quota = new_move_quota
+        S.move_quota = new_move_quota
     end
 end
 
@@ -225,6 +278,31 @@ M.ref_end = sched_ref_end
 M.move_start = sched_move_start
 M.move_end = sched_move_end
 M.cfg = sched_cfg
+
+--
+-- The numbers used to be the fields of M. Tests and other code still read and
+-- write them there, so M forwards these names to the struct.
+--
+local state_fields = {
+    ref_count = true, ref_queue = true, ref_strike = true, ref_quota = true,
+    move_count = true, move_queue = true, move_strike = true, move_quota = true,
+    all_rw = true,
+}
+setmetatable(M, {
+    __index = function(_, key)
+        if state_fields[key] then
+            return S[key]
+        end
+    end,
+    __newindex = function(self, key, value)
+        if state_fields[key] then
+            S[key] = value
+        else
+            rawset(self, key, value)
+        end
+    end,
+})
+
 lregistry.storage_sched = M
 
 return M
