@@ -48,6 +48,13 @@ local fiber_is_self_canceled = lutil.fiber_is_self_canceled
 -- A second ffi.cdef of the same struct fails, and the module can be loaded
 -- again after its package.loaded entry is cleared.
 --
+-- With a host the struct outlives such a reload, while the refs of the ref
+-- module and the cond below do not: a ref alive during the reload would keep
+-- its count forever. The host may also keep the old ref module and the old
+-- functions of this one, which then serve the old sessions and the old cond.
+-- So a host sharing the struct does not support reloading vshard modules.
+-- Picodata does not reload them.
+--
 if not pcall(ffi.typeof, 'struct vshard_sched_state') then
     ffi.cdef([[
         struct vshard_sched_state {
