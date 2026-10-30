@@ -32,7 +32,9 @@ test:
       - scheduler_failure
       - api_failure
   before_script:
-    - dnf install -y python3-pyyaml python3-gevent
+    # python3-pyyaml and python3-gevent pull platform-python only, which
+    # gives no python3 command.
+    - dnf install -y python3 python3-pyyaml python3-gevent
   script:
     - cd test
     - ./test-run.py --force -j 4 --vardir var
